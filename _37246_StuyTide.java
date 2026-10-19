@@ -1,29 +1,5 @@
-/*   MIT License
- *   Copyright (c) [2026] [Base 10 Assets, LLC]
- *
- *   Permission is hereby granted, free of charge, to any person obtaining a copy
- *   of this software and associated documentation files (the "Software"), to deal
- *   in the Software without restriction, including without limitation the rights
- *   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- *   copies of the Software, and to permit persons to whom the Software is
- *   furnished to do so, subject to the following conditions:
-
- *   The above copyright notice and this permission notice shall be included in all
- *   copies or substantial portions of the Software.
-
- *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- *   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- *   SOFTWARE.
- */
-
 package org.firstinspires.ftc.teamcode;
-
 import static com.qualcomm.robotcore.hardware.DcMotor.ZeroPowerBehavior.BRAKE;
-
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
@@ -33,30 +9,11 @@ import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
-
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 
-/*
- * Field-centric teleop for the goBILDA® StarterBot with Mecanum Wheels
- * (2026-2027 FIRST® Tech Challenge).
- *
- * Field-centric drive means "forward" on the left stick always moves the robot away from the
- * driver (toward the far end of the field), no matter which way the robot is facing. To do this,
- * we read the robot's heading from the Control Hub's IMU and rotate the joystick vector by the
- * opposite of that heading before feeding it into the mecanum wheel equations.
- *
- * Press OPTIONS on gamepad1 to re-zero the heading. Do this with the robot's front facing away
- * from the driver (the same way it started).
- *
- * The launcher uses closed-loop velocity control ("RUN_USING_ENCODER") with custom PIDF
- * coefficients, since a launcher wheel behaves very differently from most other FTC mechanisms.
- */
+@TeleOp(name = "_37246_StuyTide", group = "StarterBot")
+public class _37246_StuyTide extends OpMode {
 
-@TeleOp(name = "Mec BioBuzz StarterBot Teleop (Field Centric)", group = "StarterBot")
-//@Disabled
-public class BioBuzzStarterbotTeleopMecanum extends OpMode {
-
-    // Declare OpMode members.
     private DcMotor leftFrontDrive = null;
     private DcMotor leftBackDrive = null;
     private DcMotor rightFrontDrive = null;
@@ -67,52 +24,25 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
     private CRServo rightIntakeServo = null;
     private CRServo windmillServo = null;
 
-    // IMU used to get the robot's heading for field-centric driving.
     private IMU imu = null;
 
-    /*
-     * These two variables are used to control the velocity of the launcher motor.
-     * They are both in encoder ticks per second. The motors we use in the FIRST Tech Challenge
-     * have encoders with a resolution of 28 ticks per revolution. We can convert this to RPM
-     * by dividing the value by 28, to get to revolutions per second, before multiplying by 60
-     * to get revolutions per minute.
-     * We pass the target velocity variable to our motor to set the goal. We use the min velocity
-     * in the launch() function to only run the windmill servo when the motor is spinning fast
-     * enough to make a successful throw.
-     */
-    public final int LAUNCHER_TARGET_VELOCITY = 1250; //2678 RPM
-    public final int LAUNCHER_MIN_VELOCITY = 1200; //2571 RPM
+    public final int LAUNCHER_TARGET_VELOCITY = 1180;
+    public final int LAUNCHER_MIN_VELOCITY = 1100;
 
     /*
      * Strafing is less efficient than driving forward/back on mecanum wheels, so we scale the
      * strafe input up slightly to compensate. Set to 1.0 to disable.
      */
-    public final double STRAFE_CORRECTION = 1.1;
+    public final double STRAFE_CORRECTION = 1.0;
 
-    /*
-     * These four variables store the power we need to apply to the motors. In other cases, we may
-     * choose to declare these variables inside the mecanumDrive() function, instead we declare them
-     * here so that we can access them in our main loop for telemetry.
-     */
     double leftFrontPower;
     double rightFrontPower;
     double leftBackPower;
     double rightBackPower;
-
-    // Create a variable to set to the intake.
     double intakePower;
 
-    /*
-     * Code to run ONCE when the driver hits INIT
-     */
     @Override
     public void init() {
-
-        /*
-         * Initialize the hardware variables. Note that the strings used here as parameters
-         * to 'get' must correspond to the names assigned during the robot configuration
-         * step.
-         */
         leftFrontDrive = hardwareMap.get(DcMotor.class, "left_front_drive");
         rightFrontDrive = hardwareMap.get(DcMotor.class, "right_front_drive");
         leftBackDrive = hardwareMap.get(DcMotor.class, "left_back_drive");
@@ -131,8 +61,8 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
          */
         imu = hardwareMap.get(IMU.class, "imu");
         IMU.Parameters imuParameters = new IMU.Parameters(new RevHubOrientationOnRobot(
-                RevHubOrientationOnRobot.LogoFacingDirection.UP,
-                RevHubOrientationOnRobot.UsbFacingDirection.FORWARD));
+                RevHubOrientationOnRobot.LogoFacingDirection.LEFT,
+                RevHubOrientationOnRobot.UsbFacingDirection.UP));
         imu.initialize(imuParameters);
         imu.resetYaw();
 
@@ -167,12 +97,8 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
          * through any wiring.
          */
         launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-
         launcher.setPIDFCoefficients(DcMotor.RunMode.RUN_USING_ENCODER, new PIDFCoefficients(40, 0, 0, 12.5));
 
-        /*
-         * set Feeders to an initial value to initialize the servo controller
-         */
         leftIntakeServo.setPower(0);
         rightIntakeServo.setPower(0);
         windmillServo.setPower(0);
@@ -184,9 +110,6 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
         rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
         windmillServo.setDirection(DcMotorSimple.Direction.REVERSE);
 
-        /*
-         * Tell the driver that initialization is complete.
-         */
         telemetry.addData("Status", "Initialized");
         telemetry.addLine("Face the robot away from the driver, then press OPTIONS to zero heading.");
     }
@@ -203,8 +126,6 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
      */
     @Override
     public void start() {
-        // Zero the heading at the start of the match so "forward" is whichever way the robot
-        // is facing right now.
         imu.resetYaw();
     }
 
@@ -214,11 +135,11 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
     @Override
     public void loop() {
         /*
-         * Pressing OPTIONS re-zeroes the IMU heading. If the heading drifts, or the robot
+         * Pressing TRIANGLE re-zeroes the IMU heading. If the heading drifts, or the robot
          * starts facing a different direction, line the robot up facing away from the driver
          * and press this button.
          */
-        if (gamepad1.options) {
+        if (gamepad1.triangle) {
             imu.resetYaw();
         }
 
