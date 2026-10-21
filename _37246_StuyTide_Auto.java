@@ -1,6 +1,8 @@
 package org.firstinspires.ftc.teamcode;
 
 import static com.qualcomm.robotcore.hardware.DcMotor.ZeroPowerBehavior.BRAKE;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
@@ -155,13 +157,37 @@ public class _37246_StuyTide_Auto extends LinearOpMode {
             //   startIntake(1.0);               // intake on while driving...
             //   driveRobot(24, 0);
             //   stopIntake();                   // ...then off
-            goTo(-45, -35, -90);
+            
+            
+            // Works. Simplest auto
+            // shoot(5000);
+            // waitMs(500);
+            // goTo(-28, -38, -90);
+            // moveBy(-76, 0);
+            // moveBy(0, -4);
+            
+            // shoot(5000);
+            turnBy(-30);
             startIntake(1.0);
-            moveBy(0, -2);
+            moveBy(0, -35);
+            turnBy(30);
+            moveBy(10, 0);
+            moveBy(0, -10);
+            moveBy(0, 10);
             waitMs(1000);
-            moveBy(-6, 0);
             stopIntake();
-            moveBy(-40, 0);
+            goTo(0, 10, 180);
+            goTo(-130, 4, 180);
+            shoot(5000);
+            moveBy(10, 0);
+            moveBy(0, -30);
+            goTo(-104, -42, 90);
+            
+            // waitMs(500);
+            // goTo(-28, -38, -90);
+            // moveBy(-76, 0);
+            // moveBy(0, -4);
+            
             // --------------------------------------------------------------------
 
             updateOdometry();
