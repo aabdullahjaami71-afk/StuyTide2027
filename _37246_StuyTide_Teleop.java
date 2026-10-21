@@ -1,4 +1,3 @@
-
 package org.firstinspires.ftc.teamcode;
 
 import static com.qualcomm.robotcore.hardware.DcMotor.ZeroPowerBehavior.BRAKE;
@@ -12,11 +11,59 @@ import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.util.Range;
 
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 
+/**
+ * Field-oriented TeleOp.
+ *
+ * HEADING CONVENTION (same as the Auto file):
+ *   0 degrees   = field right (toward the driver's right hand)
+ *   90 degrees  = field forward (away from the driver)
+ *   Positive    = counterclockwise when viewed from above
+ *
+ * CONTROLS (gamepad1)
+ *   Left stick   : move the robot across the field (up = away from driver)
+ *   Right stick  : rotate the robot
+ *   Triggers     : intake (right) / outtake (left)
+ *   Right bumper : hold to shoot (spins the launcher up if needed, then
+ *                  feeds automatically once it is at speed)
+ *   Circle       : toggle launcher pre-spin. Turn it on while driving to the
+ *                  goal so the launcher is already at speed when you shoot.
+ *   Triangle     : re-zero heading. Point the robot's front at the driver's
+ *                  right (START_HEADING_DEGREES), then press.
+ */
 @TeleOp(name = "_37246_StuyTide_Teleop", group = "StarterBot")
 public class _37246_StuyTide_Teleop extends OpMode {
+
+    // ---------------------------------------------------------------
+    // Tunable constants
+    // ---------------------------------------------------------------
+
+    // Direction the robot's front faces when the heading is zeroed.
+    // 0 = the intake points toward the driver's right.
+    private static final double START_HEADING_DEGREES = 0.0;
+
+    // Strafing is less efficient than driving forward on mecanum wheels,
+    // so sideways commands are boosted by this factor.
+    private static final double STRAFE_CORRECTION = 1.1;
+
+    // Multiplies the right stick for turning. 1.0 = stick directly sets turn
+    // power; higher values reach full turn speed with less stick travel
+    // (1.5 = full turn speed at two-thirds stick). Raise it if turning still
+    // feels slow; lower it if turning feels twitchy.
+    private static final double TURN_GAIN = 1.5;
+
+    private static final double LAUNCHER_TARGET_VELOCITY = 1180;
+    private static final double LAUNCHER_MIN_VELOCITY = 1100;
+
+    // Extra intake power added while a shot is being fed.
+    private static final double SHOOT_INTAKE_BOOST = 0.5;
+
+    // ---------------------------------------------------------------
+    // Hardware
+    // ---------------------------------------------------------------
 
     private DcMotor leftFrontDrive;
     private DcMotor leftBackDrive;
@@ -32,284 +79,256 @@ public class _37246_StuyTide_Teleop extends OpMode {
 
     private IMU imu;
 
-    public final int LAUNCHER_TARGET_VELOCITY = 1180;
-    public final int LAUNCHER_MIN_VELOCITY = 1100;
-
-    public final double STRAFE_CORRECTION = 1.1;
-
-    // Field heading offset:
-    // Robot front (intake) initially points to the driver's right.
-    // Field forward points away from the driver.
-    private static final double FIELD_HEADING_OFFSET = -90.0;
+    // ---------------------------------------------------------------
+    // State (also shown in telemetry)
+    // ---------------------------------------------------------------
 
     private double leftFrontPower;
     private double rightFrontPower;
     private double leftBackPower;
     private double rightBackPower;
-    private double intakePower;
 
+    private boolean launcherPreSpin = false;   // toggled with Circle
+    private boolean launcherRunning = false;   // is the launcher being commanded to spin?
+    private double launcherVelocity = 0;       // read once per loop
+
+    // Previous button states, used to detect a fresh press (not a hold).
     private boolean previousTriangle = false;
+    private boolean previousCircle = false;
 
     @Override
     public void init() {
-
-        leftFrontDrive = hardwareMap.get(
-                DcMotor.class, "left_front_drive");
-        rightFrontDrive = hardwareMap.get(
-                DcMotor.class, "right_front_drive");
-        leftBackDrive = hardwareMap.get(
-                DcMotor.class, "left_back_drive");
-        rightBackDrive = hardwareMap.get(
-                DcMotor.class, "right_back_drive");
+        leftFrontDrive = hardwareMap.get(DcMotor.class, "left_front_drive");
+        rightFrontDrive = hardwareMap.get(DcMotor.class, "right_front_drive");
+        leftBackDrive = hardwareMap.get(DcMotor.class, "left_back_drive");
+        rightBackDrive = hardwareMap.get(DcMotor.class, "right_back_drive");
 
         intake = hardwareMap.get(DcMotor.class, "intake");
         launcher = hardwareMap.get(DcMotorEx.class, "launcher");
 
-        windmillServo = hardwareMap.get(
-                CRServo.class, "windmillServo");
-        leftIntakeServo = hardwareMap.get(
-                CRServo.class, "left_intake_servo");
-        rightIntakeServo = hardwareMap.get(
-                CRServo.class, "right_intake_servo");
+        windmillServo = hardwareMap.get(CRServo.class, "windmillServo");
+        leftIntakeServo = hardwareMap.get(CRServo.class, "left_intake_servo");
+        rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
 
-        // Control Hub mounting:
-        // Logo faces robot-left; USB ports face upward.
-        // This corresponds to the logo facing away from the
-        // driver when the robot's intake faces the driver's right.
+        // Control Hub mounting: logo faces robot-left, USB ports face up.
         imu = hardwareMap.get(IMU.class, "imu");
-
-        IMU.Parameters imuParameters = new IMU.Parameters(
-                new RevHubOrientationOnRobot(
-                        RevHubOrientationOnRobot.LogoFacingDirection.LEFT,
-                        RevHubOrientationOnRobot.UsbFacingDirection.UP
-                )
-        );
-
-        imu.initialize(imuParameters);
+        imu.initialize(new IMU.Parameters(new RevHubOrientationOnRobot(
+                RevHubOrientationOnRobot.LogoFacingDirection.LEFT,
+                RevHubOrientationOnRobot.UsbFacingDirection.UP)));
         imu.resetYaw();
 
-        // Drive motor directions.
+        // The left motors are mounted mirrored from the right ones, so one
+        // side must be reversed for positive power to mean "forward" on
+        // all four wheels.
         leftFrontDrive.setDirection(DcMotor.Direction.REVERSE);
         rightFrontDrive.setDirection(DcMotor.Direction.FORWARD);
         leftBackDrive.setDirection(DcMotor.Direction.REVERSE);
         rightBackDrive.setDirection(DcMotor.Direction.FORWARD);
 
-        // Brake mode.
+        // Open-loop drive: power maps straight to motor voltage. RUN_USING_ENCODER
+        // would cap top speed at a fraction of the motor's maximum, and setting
+        // it explicitly means TeleOp doesn't depend on the mode Auto left behind.
+        leftFrontDrive.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        rightFrontDrive.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        leftBackDrive.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        rightBackDrive.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
+        // Brake mode: the robot stops quickly when the sticks are released.
         leftFrontDrive.setZeroPowerBehavior(BRAKE);
         rightFrontDrive.setZeroPowerBehavior(BRAKE);
         leftBackDrive.setZeroPowerBehavior(BRAKE);
         rightBackDrive.setZeroPowerBehavior(BRAKE);
         intake.setZeroPowerBehavior(BRAKE);
 
-        // Launcher configuration.
+        // Launcher: velocity control. Far below the target speed this outputs
+        // full motor power, so spin-up is already as fast as the motor allows.
         launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
         launcher.setPIDFCoefficients(
                 DcMotor.RunMode.RUN_USING_ENCODER,
-                new PIDFCoefficients(40, 0, 0, 12.5)
-        );
-
-        leftIntakeServo.setPower(0);
-        rightIntakeServo.setPower(0);
-        windmillServo.setPower(0);
+                new PIDFCoefficients(40, 0, 0, 12.5));
 
         // Intake servo directions.
-        rightIntakeServo.setDirection(
-                DcMotorSimple.Direction.REVERSE);
-        windmillServo.setDirection(
-                DcMotorSimple.Direction.REVERSE);
+        rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
+        windmillServo.setDirection(DcMotorSimple.Direction.REVERSE);
 
         telemetry.addData("Status", "Initialized");
         telemetry.addData("Drive Mode", "Field-Oriented");
-        telemetry.addData("Initial Field Offset", FIELD_HEADING_OFFSET);
-    }
-
-    @Override
-    public void init_loop() {
-        // Nothing required here.
+        telemetry.addLine("Point the intake at the driver's right before Start.");
     }
 
     @Override
     public void start() {
-        // Establish the initial heading reference at match start.
         imu.resetYaw();
         previousTriangle = false;
+        previousCircle = false;
+        launcherPreSpin = false;
     }
 
     @Override
     public void loop() {
-
-        // Triangle resets heading once per press.
+        // ---- Button presses (act once per press, not every loop) ----
         if (gamepad1.triangle && !previousTriangle) {
-            imu.resetYaw();
+            imu.resetYaw();   // current facing becomes START_HEADING_DEGREES
         }
         previousTriangle = gamepad1.triangle;
 
-        // FIELD-ORIENTED DRIVE IS ALWAYS ACTIVE.
-        // Up = away from driver.
-        // Down = toward driver.
-        // Left/right = field-relative strafing.
-        // Right stick X = robot rotation.
-        mecanumDrive(
-                -gamepad1.left_stick_y,
+        if (gamepad1.circle && !previousCircle) {
+            launcherPreSpin = !launcherPreSpin;
+        }
+        previousCircle = gamepad1.circle;
+
+        // ---- Driving ----
+        // Read the heading once per loop and reuse it.
+        double heading = getHeadingDegrees();
+
+        // Stick up (negative Y on the gamepad) = away from the driver.
+        double turn = Range.clip(gamepad1.right_stick_x * TURN_GAIN, -1.0, 1.0);
+        driveFieldRelative(
                 gamepad1.left_stick_x,
-                gamepad1.right_stick_x
-        );
+                -gamepad1.left_stick_y,
+                turn,
+                heading);
 
-        // Intake trigger control.
-        intakePower =
-                gamepad1.right_trigger - gamepad1.left_trigger;
+        // ---- Launcher + intake ----
+        boolean feeding = updateLauncher();
 
-        // Launcher and windmill control.
-        launch();
+        double intakePower = gamepad1.right_trigger - gamepad1.left_trigger;
+        if (feeding) {
+            intakePower += SHOOT_INTAKE_BOOST;
+        }
+        intakePower = Range.clip(intakePower, -1.0, 1.0);
 
-        // Keep motor and servo powers within their valid range.
-        double safeIntakePower = Math.max(
-                -1.0, Math.min(1.0, intakePower));
+        intake.setPower(intakePower);
+        leftIntakeServo.setPower(intakePower);
+        rightIntakeServo.setPower(intakePower);
 
-        intake.setPower(safeIntakePower);
-        leftIntakeServo.setPower(safeIntakePower);
-        rightIntakeServo.setPower(safeIntakePower);
-
-        // Telemetry.
-        double yaw = imu.getRobotYawPitchRollAngles()
-                .getYaw(AngleUnit.DEGREES);
-
-        double fieldHeading = normalizeDegrees(
-                yaw + FIELD_HEADING_OFFSET);
-
-        telemetry.addData("Drive Mode", "FIELD-ORIENTED");
-        telemetry.addData("IMU Yaw", "%.1f", yaw);
-        telemetry.addData("Field Heading", "%.1f", fieldHeading);
-
-        telemetry.addData(
-                "Front Motors",
-                "LF %.2f | RF %.2f",
-                leftFrontPower, rightFrontPower
-        );
-
-        telemetry.addData(
-                "Back Motors",
-                "LB %.2f | RB %.2f",
-                leftBackPower, rightBackPower
-        );
-
-        telemetry.addData(
-                "Triggers",
-                "Left %.2f | Right %.2f",
-                gamepad1.left_trigger,
-                gamepad1.right_trigger
-        );
-
+        // ---- Telemetry ----
+        String launcherState = !launcherRunning ? "OFF"
+                : (launcherVelocity > LAUNCHER_MIN_VELOCITY ? "READY" : "SPINNING UP");
+        telemetry.addData("Heading", "%.1f deg", heading);
+        telemetry.addData("Front", "LF %.2f | RF %.2f", leftFrontPower, rightFrontPower);
+        telemetry.addData("Back", "LB %.2f | RB %.2f", leftBackPower, rightBackPower);
+        telemetry.addData("Launcher", "%s (%.0f)", launcherState, launcherVelocity);
+        telemetry.addData("Intake power", "%.2f", intakePower);
         telemetry.update();
     }
 
     @Override
     public void stop() {
-        // Stop the drivetrain and mechanisms when OpMode ends.
-        leftFrontDrive.setPower(0);
-        rightFrontDrive.setPower(0);
-        leftBackDrive.setPower(0);
-        rightBackDrive.setPower(0);
-
+        setMotorPowers(0, 0, 0, 0);
         launcher.setVelocity(0);
         intake.setPower(0);
-
         leftIntakeServo.setPower(0);
         rightIntakeServo.setPower(0);
         windmillServo.setPower(0);
     }
 
+    // ---------------------------------------------------------------
+    // Driving
+    // ---------------------------------------------------------------
+
     /**
-     * Field-oriented mecanum drive.
+     * Field-oriented drive.
      *
-     * forward: positive means away from the driver.
-     * strafe:  positive means field-right.
-     * rotate:  right-stick X rotation command.
+     * @param fieldX  desired movement toward field-right (-1 to 1)
+     * @param fieldY  desired movement away from the driver (-1 to 1)
+     * @param turn    rotation command; positive = clockwise (-1 to 1)
+     * @param headingDegrees robot heading on the field (0 = right, CCW positive)
      *
-     * The field-relative translation vector is transformed into
-     * robot-relative coordinates using the IMU heading.
+     * The stick gives a direction in FIELD terms. The wheels need a direction
+     * in ROBOT terms. If the robot is rotated by heading h, the field vector
+     * is rotated by -h to express it in the robot's own frame:
+     *
+     *   robotForward = fieldX * cos(h) + fieldY * sin(h)
+     *   robotRight   = fieldX * sin(h) - fieldY * cos(h)
      */
-    private void mecanumDrive(
-            double forward,
-            double strafe,
-            double rotate) {
+    private void driveFieldRelative(
+            double fieldX, double fieldY, double turn, double headingDegrees) {
 
-        double yaw = imu.getRobotYawPitchRollAngles()
-                .getYaw(AngleUnit.DEGREES);
+        double h = Math.toRadians(headingDegrees);
+        double cos = Math.cos(h);
+        double sin = Math.sin(h);
 
-        // Convert the robot's measured heading to the field heading.
-        double heading = Math.toRadians(
-                normalizeDegrees(yaw + FIELD_HEADING_OFFSET));
+        double robotForward = fieldX * cos + fieldY * sin;
+        double robotRight = (fieldX * sin - fieldY * cos) * STRAFE_CORRECTION;
 
-        // Field-relative -> robot-relative coordinate transform.
-        double robotStrafe =
-                strafe * Math.cos(heading)
-                + forward * Math.sin(heading);
+        driveRobotRelative(robotForward, robotRight, turn);
+    }
 
-        double robotForward =
-                -strafe * Math.sin(heading)
-                + forward * Math.cos(heading);
+    /**
+     * Standard mecanum mixing; all three inputs are robot-relative.
+     * For example, forward + right makes the left-front and right-back wheels
+     * spin forward while the other two cancel, sliding the robot diagonally.
+     */
+    private void driveRobotRelative(double forward, double right, double turn) {
+        double lf = forward + right + turn;
+        double rf = forward - right - turn;
+        double lb = forward - right + turn;
+        double rb = forward + right - turn;
 
-        // Compensate for mecanum strafing inefficiency.
-        robotStrafe *= STRAFE_CORRECTION;
-
-        // Standard mecanum wheel mixing.
-        leftFrontPower =
-                robotForward + robotStrafe + rotate;
-
-        rightFrontPower =
-                robotForward - robotStrafe - rotate;
-
-        leftBackPower =
-                robotForward - robotStrafe + rotate;
-
-        rightBackPower =
-                robotForward + robotStrafe - rotate;
-
-        // Normalize together to preserve the movement direction.
+        // If any wheel is asked for more than 100%, scale all four down by the
+        // same amount. That keeps the direction of travel correct while still
+        // running the fastest wheel at full power.
         double max = Math.max(
-                Math.max(
-                        Math.abs(leftFrontPower),
-                        Math.abs(rightFrontPower)),
-                Math.max(
-                        Math.abs(leftBackPower),
-                        Math.abs(rightBackPower))
-        );
-
+                Math.max(Math.abs(lf), Math.abs(rf)),
+                Math.max(Math.abs(lb), Math.abs(rb)));
         if (max > 1.0) {
-            leftFrontPower /= max;
-            rightFrontPower /= max;
-            leftBackPower /= max;
-            rightBackPower /= max;
+            lf /= max;
+            rf /= max;
+            lb /= max;
+            rb /= max;
         }
 
-        leftFrontDrive.setPower(leftFrontPower);
-        rightFrontDrive.setPower(rightFrontPower);
-        leftBackDrive.setPower(leftBackPower);
-        rightBackDrive.setPower(rightBackPower);
+        setMotorPowers(lf, rf, lb, rb);
     }
 
-    private double normalizeDegrees(double degrees) {
-        return ((degrees + 180.0) % 360.0 + 360.0) % 360.0
-                - 180.0;
+    private void setMotorPowers(double lf, double rf, double lb, double rb) {
+        leftFrontPower = lf;
+        rightFrontPower = rf;
+        leftBackPower = lb;
+        rightBackPower = rb;
+
+        leftFrontDrive.setPower(lf);
+        rightFrontDrive.setPower(rf);
+        leftBackDrive.setPower(lb);
+        rightBackDrive.setPower(rb);
     }
 
-    private void launch() {
+    /** Robot heading on the field in degrees, range -180..180. */
+    private double getHeadingDegrees() {
+        double yaw = imu.getRobotYawPitchRollAngles().getYaw(AngleUnit.DEGREES);
+        return normalizeDegrees(START_HEADING_DEGREES + yaw);
+    }
 
-        if (gamepad1.right_bumper) {
-            launcher.setVelocity(LAUNCHER_TARGET_VELOCITY);
-        } else {
-            launcher.setVelocity(0);
-        }
+    /**
+     * Wraps any angle into -180..180 so, for example, 190 becomes -170.
+     * (Java's % keeps the sign of the input, hence the extra + 360.)
+     */
+    private static double normalizeDegrees(double degrees) {
+        return ((degrees + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
+    }
 
-        if (gamepad1.right_bumper
-                && launcher.getVelocity() > LAUNCHER_MIN_VELOCITY) {
+    // ---------------------------------------------------------------
+    // Launcher
+    // ---------------------------------------------------------------
 
-            windmillServo.setPower(1.0);
-            intakePower += 0.5;
+    /**
+     * Runs the launcher while pre-spin is toggled on or the right bumper is
+     * held, and feeds the windmill only while the bumper is held AND the
+     * launcher is up to speed.
+     *
+     * @return true while balls are being fed
+     */
+    private boolean updateLauncher() {
+        boolean shootHeld = gamepad1.right_bumper;
 
-        } else {
-            windmillServo.setPower(0);
-        }
+        launcherRunning = launcherPreSpin || shootHeld;
+        launcher.setVelocity(launcherRunning ? LAUNCHER_TARGET_VELOCITY : 0);
+
+        launcherVelocity = launcher.getVelocity();   // read once, reused below
+
+        boolean feeding = shootHeld && launcherVelocity > LAUNCHER_MIN_VELOCITY;
+        windmillServo.setPower(feeding ? 1.0 : 0);
+        return feeding;
     }
 }
